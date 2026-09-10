@@ -14,14 +14,9 @@ pub fn default_name() -> &'static str {
 /// Art rows for a built-in cat, or `None` if the name is unknown.
 pub fn builtin(name: &str) -> Option<Vec<String>> {
     let art: &[&str] = match name {
-        // A round, content chonky cat.
+        // A round, content chonky cat — one continuous silhouette.
         "chonk" => &[
-            "  /\\___/\\",
-            " ( • ω • )",
-            " (  =^^=  )",
-            "  \\  ~~  /",
-            "  (       )",
-            "  (__(_)__)",
+            " /\\_/\\", "( o.o )", "(  w  )", "(     )", "(_____)",
         ],
         // Tiny happy kitten.
         "kitten" => &[" /\\_/\\", "( ^.^ )", " (u_u) "],

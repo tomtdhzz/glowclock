@@ -19,7 +19,7 @@ mod reminder;
 mod render;
 
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -29,7 +29,7 @@ use crossterm::terminal::{
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use reminder::{Manager, Reminder};
@@ -515,6 +515,7 @@ enum Overlay {
 struct Popup {
     message: String,
     shown_at: i64,
+    opened: Instant,
 }
 
 /// A single-line editor for typing a new reminder.
@@ -570,6 +571,9 @@ impl InputBox {
 
 /// How long a popup stays before auto-dismissing.
 const POPUP_TTL_SECS: i64 = 60;
+
+/// Duration of the reminder's slide-in from the right edge.
+const SLIDE: Duration = Duration::from_millis(320);
 
 fn run_interactive(mut args: Args) -> io::Result<()> {
     let offset = clock::local_utc_offset_seconds();
@@ -637,6 +641,7 @@ fn interactive_loop<B: ratatui::backend::Backend>(
                     overlay = Overlay::Popup(Popup {
                         message,
                         shown_at: now,
+                        opened: Instant::now(),
                     });
                 }
             }
@@ -653,7 +658,11 @@ fn interactive_loop<B: ratatui::backend::Backend>(
         let theme = THEMES[*theme_idx];
         term.draw(|f| ui(f, &text, &dt, theme, args.hour24, manager, &overlay, cat))?;
 
-        if event::poll(Duration::from_millis(200))? {
+        // Animate the slide-in with short frames while a popup is young;
+        // otherwise idle at 200 ms.
+        let animating = matches!(&overlay, Overlay::Popup(p) if p.opened.elapsed() < SLIDE);
+        let poll_ms = if animating { 30 } else { 200 };
+        if event::poll(Duration::from_millis(poll_ms))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind != KeyEventKind::Release {
                     match handle_key(k.code, &mut overlay) {
@@ -755,6 +764,7 @@ fn submit_reminder(line: String, args: &Args, manager: &mut Manager, now: i64) -
                     Overlay::Popup(Popup {
                         message: format!("已添加提醒：{msg}"),
                         shown_at: now,
+                        opened: Instant::now(),
                     })
                 }
                 Err(e) => Overlay::Input(InputBox::with_error(&line, format!("写入失败：{e}"))),
@@ -890,7 +900,7 @@ fn ui(
 
     // Overlays.
     match overlay {
-        Overlay::Popup(p) => render_popup(f, area, theme, &p.message, cat),
+        Overlay::Popup(p) => render_reminder(f, area, theme, &p.message, cat, p.opened),
         Overlay::Input(input) => render_input(f, area, theme, input),
         Overlay::None => {}
     }
@@ -906,57 +916,116 @@ fn reminder_count(manager: &Manager) -> &'static str {
     }
 }
 
-fn render_popup(f: &mut Frame, area: Rect, theme: Theme, message: &str, cat: &[String]) {
-    let inner_w = mascot::width(cat).max(mascot::disp_width(message).min(32));
-    let w = (inner_w as u16 + 8)
-        .min(area.width.saturating_sub(2))
-        .max(20);
-    let h = (cat.len() as u16 + 7).min(area.height.saturating_sub(2));
-    let rect = centered_rect(w, h, area);
+/// A fat cat that slides in from the right edge with a speech bubble to its
+/// left. `opened` drives the slide-in animation.
+fn render_reminder(
+    f: &mut Frame,
+    area: Rect,
+    theme: Theme,
+    message: &str,
+    cat: &[String],
+    opened: Instant,
+) {
+    // Wrap the message to a comfortable bubble width (in display columns).
+    let avail = (area.width as usize).saturating_sub(mascot::width(cat) + 8);
+    let max_text = 24usize.min(avail);
+    let wrapped = wrap_display(message, max_text.max(8));
+    let text_w = wrapped.iter().map(|l| mascot::disp_width(l)).max().unwrap_or(0);
 
-    let mut content: Vec<Line> = Vec::new();
-    for l in cat {
-        content.push(Line::from(Span::styled(
-            l.clone(),
-            Style::default().fg(rgb(theme.top)),
-        )));
+    // Compose the group lines: bubble on the left, cat on the right.
+    let bubble_w = text_w + 2; // one space of padding each side
+    let cat_w = mascot::width(cat);
+    let gap = "  ";
+    let border = Style::default().fg(rgb(theme.top));
+    let white = Style::default()
+        .fg(Color::Rgb(245, 245, 250))
+        .add_modifier(Modifier::BOLD);
+    let cat_style = Style::default().fg(rgb(theme.top));
+
+    // Bubble box (rounded) sized to the wrapped text; vertically centered on
+    // the cat by padding with blank rows.
+    let bubble_h = wrapped.len() + 2;
+    let rows = cat.len().max(bubble_h);
+    let top_pad = (rows - bubble_h) / 2;
+
+    let horiz: String = "─".repeat(bubble_w);
+    let mut group: Vec<Line> = Vec::with_capacity(rows);
+    for i in 0..rows {
+        // Left cell: the bubble occupies rows top_pad..top_pad+bubble_h.
+        let mut spans: Vec<Span> = Vec::new();
+        let bi = i.wrapping_sub(top_pad);
+        if i == top_pad {
+            spans.push(Span::styled(format!("╭{horiz}╮"), border));
+        } else if i == top_pad + bubble_h - 1 {
+            spans.push(Span::styled(format!("╰{horiz}╯"), border));
+        } else if bi < bubble_h {
+            let line = &wrapped[bi - 1];
+            let pad = text_w - mascot::disp_width(line);
+            spans.push(Span::styled("│ ".to_string(), border));
+            spans.push(Span::styled(format!("{line}{}", " ".repeat(pad)), white));
+            spans.push(Span::styled(" │".to_string(), border));
+        } else {
+            spans.push(Span::raw(" ".repeat(bubble_w + 2)));
+        }
+        // Gap + cat.
+        spans.push(Span::raw(gap.to_string()));
+        let cat_line = cat.get(i).cloned().unwrap_or_default();
+        spans.push(Span::styled(cat_line, cat_style));
+        group.push(Line::from(spans));
     }
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        message.to_string(),
-        Style::default()
-            .fg(Color::Rgb(245, 245, 250))
-            .add_modifier(Modifier::BOLD),
-    )));
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled(
-        "按任意键关闭",
-        Style::default()
-            .fg(rgb(theme.top))
-            .add_modifier(Modifier::DIM),
-    )));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(rgb(theme.top)))
-        .title(" 胖猫 提醒 ")
-        .title_style(
-            Style::default()
-                .fg(rgb(theme.bg))
-                .bg(rgb(theme.top))
-                .add_modifier(Modifier::BOLD),
-        )
-        .style(Style::default().bg(rgb(theme.bg)));
+    let group_w = (bubble_w + 2 + gap.len() + cat_w) as u16;
+    let group_h = rows as u16;
+
+    // Resting position: bottom-right, one column margin. Slide in horizontally.
+    let eased = {
+        let p = (opened.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).clamp(0.0, 1.0);
+        1.0 - (1.0 - p) * (1.0 - p) // ease-out quad
+    };
+    let rest_x = area.x + area.width.saturating_sub(group_w + 1);
+    let off = ((1.0 - eased) * group_w as f32).round() as u16;
+    let x = (rest_x + off).min(area.x + area.width.saturating_sub(1));
+    let y = area.y + area.height.saturating_sub(group_h + 2);
+    let vis_w = (area.x + area.width).saturating_sub(x).min(group_w);
+    if vis_w == 0 {
+        return;
+    }
+    let rect = Rect {
+        x,
+        y,
+        width: vis_w,
+        height: group_h.min(area.height),
+    };
 
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(content)
-            .block(block)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(group).style(Style::default().bg(rgb(theme.bg))),
         rect,
     );
+}
+
+/// Wrap `text` to at most `width` display columns per line (CJK-aware, breaks
+/// between characters since messages may have no spaces).
+fn wrap_display(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for ch in text.chars() {
+        let cw = if ch.is_ascii() { 1 } else { 2 };
+        if cur_w + cw > width && !cur.is_empty() {
+            lines.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        cur.push(ch);
+        cur_w += cw;
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Draw the "add reminder" input box with a visible caret and any error.

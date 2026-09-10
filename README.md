@@ -162,7 +162,7 @@ glowclock --reminders ~/my-reminders.txt add @hourly drink water
 
 ### How reminders appear / how to dismiss
 
-- **Appear**: a rounded box `╭ 胖猫 提醒 ╮` pops up in the center with the cat, the message, and `按任意键关闭` ("press any key to close"); a sound plays.
+- **Appear**: the fat cat **slides in from the right edge** with a speech bubble showing the message (a notification, not a centered modal), and a sound plays.
 - **Sound**: configurable with `--sound` — `off`, `bell` (terminal bell, default), a macOS system sound name (e.g. `Glass`, `Ping` — see `--list-sounds`), or a path to an audio file (played with `afplay`).
 - **Fire once**: a cron reminder fires once during its matching minute; `@every` fires once per period.
 - **Dismiss**: press any key to close immediately, or it **auto-closes after 60 seconds**. A visible popup is not interrupted by the next reminder.
