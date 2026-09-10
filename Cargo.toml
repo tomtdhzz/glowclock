@@ -1,0 +1,30 @@
+[package]
+name = "glowclock"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A gradient big-digit terminal clock (tty-clock style) with crontab-style reminders and a fat-cat popup"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/tomtdhzz/glowclock"
+homepage = "https://github.com/tomtdhzz/glowclock"
+keywords = ["clock", "terminal", "tui", "cron", "reminder"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "glowclock"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+
+# The profile that 'dist' (cargo-dist) builds release artifacts with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
