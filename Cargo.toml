@@ -1,6 +1,6 @@
 [package]
 name = "glowclock"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.88"
 description = "A gradient big-digit terminal clock (tty-clock style) with crontab-style reminders and a fat-cat popup"
