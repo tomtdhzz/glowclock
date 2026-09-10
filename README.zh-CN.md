@@ -2,7 +2,7 @@
 
 [English](./README.md)
 
-终端里的渐变大字时钟(tty-clock 风格),带 **crontab 风格的定时提醒** 和一只 **胖猫**。到点时胖猫会弹出来提醒你(比如每小时喝水),并响一声终端铃。
+终端里的渐变大字时钟(tty-clock 风格),带 **crontab 风格的定时提醒** 和一只 **胖猫**。到点时胖猫会弹出来提醒你(比如每小时喝水),并播放提示音(可用 `--sound` 配置)。
 
 用 Rust + [ratatui](https://ratatui.rs) + crossterm 写成,只依赖这两个库,本地时间通过系统 `date` 读取时区偏移,不引入 `chrono`。
 
@@ -179,7 +179,8 @@ glowclock --reminders ~/my-reminders.txt add @hourly 喝水
 
 ### 提醒如何出现 / 如何关闭
 
-- **出现**:到点时,屏幕中央弹出圆角框 `╭ 胖猫 提醒 ╮`,里面是胖猫 + 消息 + `按任意键关闭`,同时**响一声终端铃**。
+- **出现**:到点时,屏幕中央弹出圆角框 `╭ 胖猫 提醒 ╮`,里面是胖猫 + 消息 + `按任意键关闭`,同时播放提示音。
+- **提示音**:用 `--sound` 配置 —— `off`(静音)、`bell`(终端铃,默认)、macOS 系统声音名(如 `Glass`、`Ping`,见 `--list-sounds`),或一个音频文件路径(用 `afplay` 播放)。
 - **触发一次**:cron 提醒在匹配的那一分钟内只触发一次;`@every` 每个周期触发一次。
 - **关闭**:按任意键立即关闭;或 **60 秒后自动消失**。弹窗显示期间不会被下一条提醒打断。
 - **退出程序**:`q` 或 `Esc`。
@@ -237,6 +238,7 @@ glowclock <子命令> ...
   --plain             输出一帧纯方块(无颜色),便于在日志/管道里查看
   --list-reminders    打印已加载的提醒(来源、条目、解析错误)后退出
   --list-cats         打印将要使用的猫(配合 --cat/--cat-file)后退出
+  --list-sounds       打印可用的提醒提示音后退出
 
 选项:
   --theme <name|N>    主题:aurora sunset matrix ice(或序号 0..3)
@@ -244,6 +246,7 @@ glowclock <子命令> ...
   --reminders <path>  从指定的 crontab 风格文件加载提醒
   --cat <name>        选内置猫:chonk kitten loaf sleepy peek
   --cat-file <path>   从文件加载自定义猫(每行一行)
+  --sound <spec>      提醒提示音:off | bell | <macOS 声音名> | <音频路径>
   --12 | --24         12/24 小时制(默认 24)
   -h, --help          帮助
 ```

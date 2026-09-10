@@ -2,7 +2,7 @@
 
 [中文说明](./README.zh-CN.md)
 
-A gradient big-digit terminal clock (tty-clock style) with **crontab-style reminders** and a **fat cat**. When a reminder is due, the cat pops up (e.g. "drink water" every hour) and the terminal bell rings.
+A gradient big-digit terminal clock (tty-clock style) with **crontab-style reminders** and a **fat cat**. When a reminder is due, the cat pops up (e.g. "drink water" every hour) and plays a sound (configurable via `--sound`).
 
 Built with Rust + [ratatui](https://ratatui.rs) + crossterm — only those two dependencies. Local time comes from the OS timezone offset (`date +%z`); no `chrono`.
 
@@ -162,7 +162,8 @@ glowclock --reminders ~/my-reminders.txt add @hourly drink water
 
 ### How reminders appear / how to dismiss
 
-- **Appear**: a rounded box `╭ 胖猫 提醒 ╮` pops up in the center with the cat, the message, and `按任意键关闭` ("press any key to close"); the terminal bell rings.
+- **Appear**: a rounded box `╭ 胖猫 提醒 ╮` pops up in the center with the cat, the message, and `按任意键关闭` ("press any key to close"); a sound plays.
+- **Sound**: configurable with `--sound` — `off`, `bell` (terminal bell, default), a macOS system sound name (e.g. `Glass`, `Ping` — see `--list-sounds`), or a path to an audio file (played with `afplay`).
 - **Fire once**: a cron reminder fires once during its matching minute; `@every` fires once per period.
 - **Dismiss**: press any key to close immediately, or it **auto-closes after 60 seconds**. A visible popup is not interrupted by the next reminder.
 - **Quit** the app with `q` or `Esc`.
@@ -214,6 +215,7 @@ modes (default: interactive clock):
   --plain             write one monochrome block frame (no ANSI)
   --list-reminders    print loaded reminders (source, entries, errors), then exit
   --list-cats         print the cat that would be used (with --cat/--cat-file)
+  --list-sounds       print available reminder sounds, then exit
 
 options:
   --theme <name|N>    aurora sunset matrix ice (or index 0..3)
@@ -221,6 +223,7 @@ options:
   --reminders <path>   load reminders from a crontab-style file
   --cat <name>         built-in cat: chonk kitten loaf sleepy peek
   --cat-file <path>    load a custom cat from a file (one row per line)
+  --sound <spec>       reminder alert: off | bell | <macOS sound> | <audio path>
   --12 | --24          hour format (default 24)
   -h, --help           help
 ```

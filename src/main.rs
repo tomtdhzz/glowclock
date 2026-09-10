@@ -43,6 +43,19 @@ struct Args {
     reminders_path: Option<String>,
     cat_name: Option<String>,
     cat_file: Option<String>,
+    sound: Sound,
+}
+
+/// How a reminder announces itself.
+#[derive(Clone)]
+enum Sound {
+    /// Silent.
+    Off,
+    /// The terminal bell (BEL / `\x07`).
+    Bell,
+    /// Play an audio file (macOS system sound or a custom path) via `afplay`,
+    /// falling back to the bell if that is unavailable.
+    Play(String),
 }
 
 enum Mode {
@@ -54,6 +67,7 @@ enum Mode {
     ListCats,
     Add(String),
     Rm(usize),
+    ListSounds,
 }
 
 fn main() {
@@ -75,6 +89,7 @@ fn main() {
         Mode::ListCats => run_list_cats(args),
         Mode::Add(line) => run_add(args, line),
         Mode::Rm(index) => run_rm(args, index),
+        Mode::ListSounds => run_list_sounds(),
     };
 
     if let Err(e) = result {
@@ -91,6 +106,7 @@ fn parse_args() -> Result<Args, String> {
     let mut reminders_path = None;
     let mut cat_name = None;
     let mut cat_file = None;
+    let mut sound = Sound::Bell;
 
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -100,6 +116,7 @@ fn parse_args() -> Result<Args, String> {
             "--plain" => mode = Mode::Plain,
             "--list-reminders" | "list" => mode = Mode::ListReminders,
             "--list-cats" => mode = Mode::ListCats,
+            "--list-sounds" => mode = Mode::ListSounds,
             "add" => {
                 let line = it.by_ref().collect::<Vec<String>>().join(" ");
                 mode = Mode::Add(line);
@@ -118,6 +135,7 @@ fn parse_args() -> Result<Args, String> {
             "--reminders" => reminders_path = Some(it.next().ok_or("--reminders needs a path")?),
             "--cat" => cat_name = Some(it.next().ok_or("--cat needs a name")?),
             "--cat-file" => cat_file = Some(it.next().ok_or("--cat-file needs a path")?),
+            "--sound" => sound = resolve_sound(&it.next().ok_or("--sound needs a value")?),
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -133,6 +151,7 @@ fn parse_args() -> Result<Args, String> {
         reminders_path,
         cat_name,
         cat_file,
+        sound,
     })
 }
 
@@ -149,12 +168,81 @@ fn resolve_theme(v: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("unknown theme: {v}"))
 }
 
+/// macOS built-in sounds live here as `.aiff` files.
+const SYS_SOUNDS_DIR: &str = "/System/Library/Sounds";
+
+/// Interpret a `--sound` value: `off`, `bell`, a macOS system-sound name, or a
+/// path to an audio file.
+fn resolve_sound(v: &str) -> Sound {
+    match v.trim() {
+        "" | "off" | "none" | "silent" | "mute" => Sound::Off,
+        "bell" | "beep" | "terminal" => Sound::Bell,
+        other => {
+            if std::path::Path::new(other).is_file() {
+                return Sound::Play(other.to_string());
+            }
+            let sys = format!("{SYS_SOUNDS_DIR}/{other}.aiff");
+            if std::path::Path::new(&sys).is_file() {
+                return Sound::Play(sys);
+            }
+            // Use the value verbatim; `afplay` will report if it is unplayable.
+            Sound::Play(other.to_string())
+        }
+    }
+}
+
+/// Announce a reminder with the configured sound. Playing an audio file is
+/// spawned and reaped off-thread so it never blocks the UI or leaks a zombie;
+/// if `afplay` is missing, fall back to the terminal bell.
+fn alert(sound: &Sound) {
+    match sound {
+        Sound::Off => {}
+        Sound::Bell => ring_bell(),
+        Sound::Play(path) => match std::process::Command::new("afplay").arg(path).spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(_) => ring_bell(),
+        },
+    }
+}
+
+fn run_list_sounds() -> io::Result<()> {
+    println!("--sound values:");
+    println!("  off            silent");
+    println!("  bell           terminal bell (default)");
+    println!("  <name>         a macOS system sound (listed below)");
+    println!("  <path>         an audio file played with afplay");
+    let dir = std::path::Path::new(SYS_SOUNDS_DIR);
+    if dir.is_dir() {
+        let mut names: Vec<String> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("aiff") {
+                    p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        names.sort();
+        if !names.is_empty() {
+            println!("\nmacOS system sounds:");
+            println!("  {}", names.join(", "));
+        }
+    }
+    Ok(())
+}
+
 fn print_help() {
     println!("glowclock — gradient clock with crontab-style reminders and a fat cat\n");
     println!(
-        "USAGE: glowclock [--snapshot|--gallery|--plain|--list-reminders|--list-cats]\n       \
+        "USAGE: glowclock [--snapshot|--gallery|--plain|--list-reminders|--list-cats|--list-sounds]\n       \
          [--theme <name|N>] [--time HH:MM:SS] [--reminders <path>]\n       \
-         [--cat <name>] [--cat-file <path>] [--12|--24]\n"
+         [--cat <name>] [--cat-file <path>] [--sound <off|bell|name|path>] [--12|--24]\n"
     );
     print!("themes:");
     for (i, t) in THEMES.iter().enumerate() {
@@ -163,6 +251,7 @@ fn print_help() {
     print!("\ncats:  ");
     print!("{}", mascot::NAMES.join(", "));
     println!("   (default: {})", mascot::default_name());
+    println!("\nsound (reminder alert):  off | bell | <macOS sound name> | <audio path>   (see --list-sounds)");
     println!("\nreminders file (crontab-style, one per line):");
     println!("  min hour dom mon dow  message   |  @hourly/@daily/@every <dur>  message");
     println!("\nmanage reminders from the CLI (writes the reminders file):");
@@ -544,7 +633,7 @@ fn interactive_loop<B: ratatui::backend::Backend>(
         match &overlay {
             Overlay::None => {
                 if let Some(message) = manager.poll(&dt, now) {
-                    ring_bell();
+                    alert(&args.sound);
                     overlay = Overlay::Popup(Popup {
                         message,
                         shown_at: now,
