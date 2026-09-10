@@ -15,6 +15,20 @@
 
 ---
 
+## 安装
+
+```bash
+# Homebrew(macOS / Linux)
+brew install tomtdhzz/tap/glowclock
+
+# 或一行安装脚本(预编译二进制)
+curl -LsSf https://github.com/tomtdhzz/glowclock/releases/latest/download/glowclock-installer.sh | sh
+```
+
+每个 [release](https://github.com/tomtdhzz/glowclock/releases) 都附带 macOS(arm64/x86_64)与 Linux(arm64/x86_64)的预编译二进制。
+
+---
+
 ## 构建与运行
 
 ```bash

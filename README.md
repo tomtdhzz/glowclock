@@ -13,6 +13,18 @@ Built with Rust + [ratatui](https://ratatui.rs) + crossterm — only those two d
     q quit  space theme  ...
 ```
 
+## Install
+
+```bash
+# Homebrew (macOS / Linux)
+brew install tomtdhzz/tap/glowclock
+
+# or the one-line installer (prebuilt binaries)
+curl -LsSf https://github.com/tomtdhzz/glowclock/releases/latest/download/glowclock-installer.sh | sh
+```
+
+Prebuilt binaries for macOS (arm64/x86_64) and Linux (arm64/x86_64) are attached to each [release](https://github.com/tomtdhzz/glowclock/releases).
+
 ## Build & run
 
 ```bash
