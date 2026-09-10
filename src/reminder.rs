@@ -280,6 +280,17 @@ impl Manager {
         self.items.is_empty()
     }
 
+    /// Add a reminder at runtime so it fires without restarting.
+    pub fn push(&mut self, r: Reminder, now_unix: i64) {
+        let next = match r.schedule {
+            Schedule::Every { period_secs } => now_unix + period_secs,
+            Schedule::Cron(_) => i64::MAX,
+        };
+        self.items.push(r);
+        self.cron_last.push(-1);
+        self.every_next.push(next);
+    }
+
     /// Return the message of the first reminder that has become due, advancing
     /// its bookkeeping so it will not re-fire for the same occurrence.
     pub fn poll(&mut self, dt: &DateTime, now_unix: i64) -> Option<String> {

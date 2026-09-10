@@ -28,6 +28,7 @@ On start, if a `glowclock-reminders.txt` exists in the working directory it is l
 | Key           | Action                        |
 | ------------- | ----------------------------- |
 | `q` / `Esc`   | Quit                          |
+| `a`           | Add a reminder (type it in)   |
 | `space` / `c` | Cycle theme                   |
 | `f`           | Toggle 12/24-hour format      |
 | any key       | Dismiss the current cat popup |
@@ -126,6 +127,8 @@ Lines that fail to parse are reported to stderr on start and skipped; other line
 ### Manage reminders from the CLI
 
 Instead of editing the file by hand, add / list / remove reminders directly. These write the reminders file (see *target file* below).
+
+You can also add one **without leaving the clock**: press `a`, type the reminder (same format as a file line — no shell quoting needed here), and press Enter. It is saved to the file and starts firing immediately; the cat confirms with `已添加提醒：…`.
 
 ```bash
 # add:  glowclock add <schedule> <message...>

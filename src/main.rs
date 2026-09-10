@@ -171,7 +171,7 @@ fn print_help() {
     println!("  glowclock list                          list reminders with an index");
     println!("  glowclock rm <index>                    remove the reminder at <index>");
     println!(
-        "\nkeys (interactive): q/Esc quit · space/c theme · f 12/24h · any key closes a popup"
+        "\nkeys (interactive): q/Esc quit · a add reminder · space/c theme · f 12/24h · any key closes a popup"
     );
 }
 
@@ -281,20 +281,26 @@ fn run_add(args: Args, line: String) -> io::Result<()> {
     }
 
     let target = mutate_target(args.reminders_path.as_deref());
-    if let Some(parent) = std::path::Path::new(&target).parent() {
+    append_reminder_line(&target, &line)?;
+    println!("added to {target}:\n  {line}");
+    Ok(())
+}
+
+/// Append one already-validated reminder line to `target`, creating the file
+/// (and parent directories) if needed and keeping a trailing newline.
+fn append_reminder_line(target: &str, line: &str) -> io::Result<()> {
+    if let Some(parent) = std::path::Path::new(target).parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let mut text = std::fs::read_to_string(&target).unwrap_or_default();
+    let mut text = std::fs::read_to_string(target).unwrap_or_default();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&line);
+    text.push_str(line);
     text.push('\n');
-    std::fs::write(&target, text)?;
-    println!("added to {target}:\n  {line}");
-    Ok(())
+    std::fs::write(target, text)
 }
 
 /// `glowclock rm <index>` — remove the Nth reminder (as shown by `list`).
@@ -409,10 +415,68 @@ fn write_plain(out: &mut impl Write, text: &str, theme: Theme) -> io::Result<()>
 
 // ---- interactive ------------------------------------------------------------
 
-/// State of the active fat-cat popup, if any.
+/// The active overlay above the clock, if any.
+enum Overlay {
+    None,
+    Popup(Popup),
+    Input(InputBox),
+}
+
+/// A fat-cat reminder popup.
 struct Popup {
     message: String,
     shown_at: i64,
+}
+
+/// A single-line editor for typing a new reminder.
+struct InputBox {
+    chars: Vec<char>,
+    cursor: usize,
+    error: Option<String>,
+}
+
+impl InputBox {
+    fn new() -> InputBox {
+        InputBox {
+            chars: Vec::new(),
+            cursor: 0,
+            error: None,
+        }
+    }
+
+    fn with_error(text: &str, error: String) -> InputBox {
+        let chars: Vec<char> = text.chars().collect();
+        let cursor = chars.len();
+        InputBox {
+            chars,
+            cursor,
+            error: Some(error),
+        }
+    }
+
+    fn text(&self) -> String {
+        self.chars.iter().collect()
+    }
+
+    fn insert(&mut self, c: char) {
+        self.chars.insert(self.cursor, c);
+        self.cursor += 1;
+        self.error = None;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.chars.remove(self.cursor);
+            self.error = None;
+        }
+    }
+
+    fn delete(&mut self) {
+        if self.cursor < self.chars.len() {
+            self.chars.remove(self.cursor);
+        }
+    }
 }
 
 /// How long a popup stays before auto-dismissing.
@@ -470,24 +534,27 @@ fn interactive_loop<B: ratatui::backend::Backend>(
     manager: &mut Manager,
     cat: &[String],
 ) -> io::Result<()> {
-    let mut popup: Option<Popup> = None;
+    let mut overlay = Overlay::None;
     loop {
         let now = clock::now_unix();
         let dt = clock::now_datetime(offset);
 
-        // Fire at most one popup per tick; a live popup is not interrupted.
-        if popup.is_none() {
-            if let Some(message) = manager.poll(&dt, now) {
-                ring_bell();
-                popup = Some(Popup {
-                    message,
-                    shown_at: now,
-                });
+        // Reminders fire only when nothing else is on screen, so a popup or
+        // an in-progress input is never interrupted.
+        match &overlay {
+            Overlay::None => {
+                if let Some(message) = manager.poll(&dt, now) {
+                    ring_bell();
+                    overlay = Overlay::Popup(Popup {
+                        message,
+                        shown_at: now,
+                    });
+                }
             }
-        } else if let Some(p) = &popup {
-            if now - p.shown_at >= POPUP_TTL_SECS {
-                popup = None;
+            Overlay::Popup(p) if now - p.shown_at >= POPUP_TTL_SECS => {
+                overlay = Overlay::None;
             }
+            _ => {}
         }
 
         let text = match &args.fixed {
@@ -495,37 +562,118 @@ fn interactive_loop<B: ratatui::backend::Backend>(
             None => clock::format_display(dt.hms(), args.hour24),
         };
         let theme = THEMES[*theme_idx];
-        term.draw(|f| {
-            ui(
-                f,
-                &text,
-                &dt,
-                theme,
-                args.hour24,
-                manager,
-                popup.as_ref(),
-                cat,
-            )
-        })?;
+        term.draw(|f| ui(f, &text, &dt, theme, args.hour24, manager, &overlay, cat))?;
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind != KeyEventKind::Release {
-                    match k.code {
-                        KeyCode::Char('q') => break,
-                        _ if popup.is_some() => popup = None,
-                        KeyCode::Esc => break,
-                        KeyCode::Char('c') | KeyCode::Char(' ') => {
-                            *theme_idx = (*theme_idx + 1) % THEMES.len();
+                    match handle_key(k.code, &mut overlay) {
+                        Action::Quit => break,
+                        Action::CycleTheme => *theme_idx = (*theme_idx + 1) % THEMES.len(),
+                        Action::ToggleFormat => args.hour24 = !args.hour24,
+                        Action::Submit(line) => {
+                            overlay = submit_reminder(line, args, manager, now);
                         }
-                        KeyCode::Char('f') => args.hour24 = !args.hour24,
-                        _ => {}
+                        Action::None => {}
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+/// What a keypress asks the loop to do (things needing the loop's own state).
+enum Action {
+    None,
+    Quit,
+    CycleTheme,
+    ToggleFormat,
+    Submit(String),
+}
+
+/// Route a keypress through the current overlay, mutating input state in place
+/// and returning any action the loop must perform.
+fn handle_key(code: KeyCode, overlay: &mut Overlay) -> Action {
+    match overlay {
+        Overlay::Input(input) => match code {
+            KeyCode::Esc => {
+                *overlay = Overlay::None;
+                Action::None
+            }
+            KeyCode::Enter => Action::Submit(input.text()),
+            KeyCode::Backspace => {
+                input.backspace();
+                Action::None
+            }
+            KeyCode::Delete => {
+                input.delete();
+                Action::None
+            }
+            KeyCode::Left => {
+                input.cursor = input.cursor.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Right => {
+                input.cursor = (input.cursor + 1).min(input.chars.len());
+                Action::None
+            }
+            KeyCode::Home => {
+                input.cursor = 0;
+                Action::None
+            }
+            KeyCode::End => {
+                input.cursor = input.chars.len();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                input.insert(c);
+                Action::None
+            }
+            _ => Action::None,
+        },
+        Overlay::Popup(_) => match code {
+            KeyCode::Char('q') => Action::Quit,
+            _ => {
+                *overlay = Overlay::None;
+                Action::None
+            }
+        },
+        Overlay::None => match code {
+            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+            KeyCode::Char('a') => {
+                *overlay = Overlay::Input(InputBox::new());
+                Action::None
+            }
+            KeyCode::Char('c') | KeyCode::Char(' ') => Action::CycleTheme,
+            KeyCode::Char('f') => Action::ToggleFormat,
+            _ => Action::None,
+        },
+    }
+}
+
+/// Validate a typed reminder; on success persist it and add it live. Returns
+/// the next overlay (a cat confirmation, or the input box with an error).
+fn submit_reminder(line: String, args: &Args, manager: &mut Manager, now: i64) -> Overlay {
+    let trimmed = line.trim();
+    match reminder::Reminder::parse(trimmed) {
+        Ok(Some(r)) if !r.message.trim().is_empty() => {
+            let target = mutate_target(args.reminders_path.as_deref());
+            match append_reminder_line(&target, &r.source) {
+                Ok(()) => {
+                    let msg = r.message.clone();
+                    manager.push(r, now);
+                    Overlay::Popup(Popup {
+                        message: format!("已添加提醒：{msg}"),
+                        shown_at: now,
+                    })
+                }
+                Err(e) => Overlay::Input(InputBox::with_error(&line, format!("写入失败：{e}"))),
+            }
+        }
+        Ok(_) => Overlay::Input(InputBox::with_error(&line, "需要填写消息文本".to_string())),
+        Err(e) => Overlay::Input(InputBox::with_error(&line, e)),
+    }
 }
 
 fn ring_bell() {
@@ -546,7 +694,7 @@ fn ui(
     theme: Theme,
     hour24: bool,
     manager: &Manager,
-    popup: Option<&Popup>,
+    overlay: &Overlay,
     cat: &[String],
 ) {
     let area = f.area();
@@ -635,6 +783,8 @@ fn ui(
     let footer = Line::from(vec![
         Span::styled("q", key),
         Span::styled(" quit  ", dim),
+        Span::styled("a", key),
+        Span::styled(" add  ", dim),
         Span::styled("space", key),
         Span::styled(" theme  ", dim),
         Span::styled("f", key),
@@ -649,9 +799,11 @@ fn ui(
         rows[3],
     );
 
-    // Fat-cat popup overlay.
-    if let Some(p) = popup {
-        render_popup(f, area, theme, &p.message, cat);
+    // Overlays.
+    match overlay {
+        Overlay::Popup(p) => render_popup(f, area, theme, &p.message, cat),
+        Overlay::Input(input) => render_input(f, area, theme, input),
+        Overlay::None => {}
     }
 }
 
@@ -716,6 +868,75 @@ fn render_popup(f: &mut Frame, area: Rect, theme: Theme, message: &str, cat: &[S
             .wrap(Wrap { trim: true }),
         rect,
     );
+}
+
+/// Draw the "add reminder" input box with a visible caret and any error.
+fn render_input(f: &mut Frame, area: Rect, theme: Theme, input: &InputBox) {
+    let w = 54u16.min(area.width.saturating_sub(2)).max(24);
+    let h = 8u16.min(area.height.saturating_sub(2)).max(7);
+    let rect = centered_rect(w, h, area);
+
+    let dim = Style::default()
+        .fg(rgb(theme.top))
+        .add_modifier(Modifier::DIM);
+
+    // Input line: text with a reversed-block caret at the cursor position.
+    let before: String = input.chars[..input.cursor].iter().collect();
+    let at: String = input
+        .chars
+        .get(input.cursor)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    let after: String = input.chars[input.cursor.min(input.chars.len())..]
+        .iter()
+        .skip(if input.cursor < input.chars.len() {
+            1
+        } else {
+            0
+        })
+        .collect();
+    let white = Style::default().fg(Color::Rgb(245, 245, 250));
+    let input_line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(rgb(theme.top))),
+        Span::styled(before, white),
+        Span::styled(at, white.add_modifier(Modifier::REVERSED)),
+        Span::styled(after, white),
+    ]);
+
+    let mut content: Vec<Line> = vec![
+        Line::from(Span::styled("输入提醒(和文件里写法一样):", dim)),
+        Line::from(Span::styled(
+            "例  0 9 * * 1-5 开晨会   或   @every 45m 远眺",
+            dim,
+        )),
+        Line::from(""),
+        input_line,
+    ];
+    if let Some(e) = &input.error {
+        content.push(Line::from(Span::styled(
+            format!("✗ {e}"),
+            Style::default().fg(Color::Rgb(240, 100, 110)),
+        )));
+    } else {
+        content.push(Line::from(""));
+    }
+    content.push(Line::from(Span::styled("Enter 保存 · Esc 取消", dim)));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(rgb(theme.top)))
+        .title(" 添加提醒 ")
+        .title_style(
+            Style::default()
+                .fg(rgb(theme.bg))
+                .bg(rgb(theme.top))
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(rgb(theme.bg)));
+
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(content).block(block), rect);
 }
 
 /// A `w` x `h` rectangle centered within `area` (clamped to fit).
