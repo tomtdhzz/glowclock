@@ -123,6 +123,28 @@ The first available source wins:
 
 Lines that fail to parse are reported to stderr on start and skipped; other lines still load.
 
+### Manage reminders from the CLI
+
+Instead of editing the file by hand, add / list / remove reminders directly. These write the reminders file (see *target file* below).
+
+```bash
+# add:  glowclock add <schedule> <message...>
+glowclock add @hourly drink water            # convenience keyword, no quoting
+glowclock add @every 45m look away           # interval, no quoting
+glowclock add "0 9 * * 1-5" morning standup  # raw cron: QUOTE it, or the shell eats the '*'
+
+glowclock list                               # show reminders with an index
+glowclock rm 2                               # remove reminder #2
+```
+
+> Quote any raw cron expression (`"0 9 * * 1-5"`) — otherwise the shell expands `*` into filenames. `@hourly`/`@daily`/`@every` need no quoting.
+
+**Target file** (which file `add`/`rm` write to): the `--reminders <path>` file if given; else an existing default file; else `~/.config/glowclock/reminders.txt` (created for you). Put `--reminders <path>` before the subcommand to target a specific file:
+
+```bash
+glowclock --reminders ~/my-reminders.txt add @hourly drink water
+```
+
 ### How reminders appear / how to dismiss
 
 - **Appear**: a rounded box `╭ 胖猫 提醒 ╮` pops up in the center with the cat, the message, and `按任意键关闭` ("press any key to close"); the terminal bell rings.
@@ -164,6 +186,12 @@ Point `--cat-file` at a text file; **each line is one row of the cat** (shown ve
 
 ```
 glowclock [options]
+glowclock <subcommand> ...
+
+subcommands (manage the reminders file):
+  add <schedule> <message...>   add a reminder (quote raw cron: "0 9 * * 1-5")
+  list                          list reminders with an index
+  rm <index>                    remove the reminder at <index>
 
 modes (default: interactive clock):
   --snapshot          write one truecolor frame to stdout, then exit

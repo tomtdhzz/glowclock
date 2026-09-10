@@ -52,10 +52,12 @@ enum Mode {
     Plain,
     ListReminders,
     ListCats,
+    Add(String),
+    Rm(usize),
 }
 
 fn main() {
-    let args = match parse_args() {
+    let mut args = match parse_args() {
         Ok(a) => a,
         Err(msg) => {
             eprintln!("{msg}");
@@ -63,13 +65,16 @@ fn main() {
         }
     };
 
-    let result = match args.mode {
+    let mode = std::mem::replace(&mut args.mode, Mode::Interactive);
+    let result = match mode {
         Mode::Interactive => run_interactive(args),
         Mode::Snapshot => run_oneshot(args, true),
         Mode::Gallery => run_gallery(args),
         Mode::Plain => run_oneshot(args, false),
         Mode::ListReminders => run_list_reminders(args),
         Mode::ListCats => run_list_cats(args),
+        Mode::Add(line) => run_add(args, line),
+        Mode::Rm(index) => run_rm(args, index),
     };
 
     if let Err(e) = result {
@@ -93,8 +98,19 @@ fn parse_args() -> Result<Args, String> {
             "--snapshot" => mode = Mode::Snapshot,
             "--gallery" => mode = Mode::Gallery,
             "--plain" => mode = Mode::Plain,
-            "--list-reminders" => mode = Mode::ListReminders,
+            "--list-reminders" | "list" => mode = Mode::ListReminders,
             "--list-cats" => mode = Mode::ListCats,
+            "add" => {
+                let line = it.by_ref().collect::<Vec<String>>().join(" ");
+                mode = Mode::Add(line);
+            }
+            "rm" | "remove" => {
+                let n = it
+                    .next()
+                    .ok_or("rm needs an index (see `glowclock list`)")?;
+                let idx: usize = n.parse().map_err(|_| format!("invalid index: {n}"))?;
+                mode = Mode::Rm(idx);
+            }
             "--24" => hour24 = true,
             "--12" => hour24 = false,
             "--theme" => theme = resolve_theme(&it.next().ok_or("--theme needs a value")?)?,
@@ -149,6 +165,11 @@ fn print_help() {
     println!("   (default: {})", mascot::default_name());
     println!("\nreminders file (crontab-style, one per line):");
     println!("  min hour dom mon dow  message   |  @hourly/@daily/@every <dur>  message");
+    println!("\nmanage reminders from the CLI (writes the reminders file):");
+    println!("  glowclock add <schedule> <message...>   add one (quote cron so the shell");
+    println!("                                          keeps the '*', e.g. \"0 9 * * 1-5\")");
+    println!("  glowclock list                          list reminders with an index");
+    println!("  glowclock rm <index>                    remove the reminder at <index>");
     println!(
         "\nkeys (interactive): q/Esc quit · space/c theme · f 12/24h · any key closes a popup"
     );
@@ -221,6 +242,109 @@ fn default_paths() -> Vec<String> {
     v
 }
 
+/// The file that `add`/`rm` should modify: explicit `--reminders`, else an
+/// existing default file, else the user config path (created on demand).
+fn mutate_target(path: Option<&str>) -> String {
+    if let Some(p) = path {
+        return p.to_string();
+    }
+    for candidate in default_paths() {
+        if std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
+    }
+    // None exist yet: prefer the user config path, fall back to the cwd file.
+    default_paths()
+        .pop()
+        .unwrap_or_else(|| "glowclock-reminders.txt".to_string())
+}
+
+/// `glowclock add <schedule> <message...>` — validate and append one reminder.
+fn run_add(args: Args, line: String) -> io::Result<()> {
+    let line = line.trim().to_string();
+    if line.is_empty() {
+        eprintln!("glowclock: add needs a schedule and a message");
+        eprintln!("  e.g. glowclock add 0 9 * * 1-5 开晨会");
+        eprintln!("       glowclock add @every 45m 远眺");
+        std::process::exit(2);
+    }
+    match reminder::Reminder::parse(&line) {
+        Ok(Some(r)) if !r.message.trim().is_empty() => {}
+        Ok(_) => {
+            eprintln!("glowclock: that reminder has no message text");
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("glowclock: invalid schedule: {e}");
+            std::process::exit(2);
+        }
+    }
+
+    let target = mutate_target(args.reminders_path.as_deref());
+    if let Some(parent) = std::path::Path::new(&target).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut text = std::fs::read_to_string(&target).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&line);
+    text.push('\n');
+    std::fs::write(&target, text)?;
+    println!("added to {target}:\n  {line}");
+    Ok(())
+}
+
+/// `glowclock rm <index>` — remove the Nth reminder (as shown by `list`).
+fn run_rm(args: Args, index: usize) -> io::Result<()> {
+    let target = mutate_target(args.reminders_path.as_deref());
+    let text = match std::fs::read_to_string(&target) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("glowclock: cannot read {target}: {e}");
+            std::process::exit(1);
+        }
+    };
+    if index == 0 {
+        eprintln!("glowclock: index starts at 1 (see `glowclock list`)");
+        std::process::exit(2);
+    }
+
+    // Walk lines, counting reminder entries; drop the one at `index`.
+    let mut count = 0usize;
+    let mut removed: Option<String> = None;
+    let mut kept: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let is_entry = matches!(reminder::Reminder::parse(line), Ok(Some(_)));
+        if is_entry {
+            count += 1;
+            if count == index {
+                removed = Some(line.to_string());
+                continue; // skip it
+            }
+        }
+        kept.push(line.to_string());
+    }
+
+    match removed {
+        Some(line) => {
+            let mut out = kept.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            std::fs::write(&target, out)?;
+            println!("removed from {target}:\n  {line}");
+            Ok(())
+        }
+        None => {
+            eprintln!("glowclock: no reminder #{index} in {target} (have {count})");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn run_list_reminders(args: Args) -> io::Result<()> {
     let (rs, source, errs) = load_reminders(args.reminders_path.as_deref());
     println!("source: {source}");
@@ -231,8 +355,11 @@ fn run_list_reminders(args: Args) -> io::Result<()> {
         }
     }
     println!("reminders ({}):", rs.len());
-    for r in &rs {
-        println!("  {}", r.source);
+    for (i, r) in rs.iter().enumerate() {
+        println!("  {}. {}", i + 1, r.source);
+    }
+    if !rs.is_empty() {
+        println!("\nremove one with: glowclock rm <index>");
     }
     Ok(())
 }

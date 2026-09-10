@@ -138,6 +138,28 @@ cargo build --release
 
 解析出错的行会在启动时打到 stderr,并被跳过,不影响其它行。
 
+### 用命令行管理提醒
+
+不想手动改文件的话,可以直接用命令行增/查/删提醒,它们会写入提醒文件(见下方"写入哪个文件")。
+
+```bash
+# 添加:  glowclock add <调度> <消息...>
+glowclock add @hourly 喝水                # 便捷关键字,无需引号
+glowclock add @every 45m 远眺             # 间隔,无需引号
+glowclock add "0 9 * * 1-5" 开晨会        # 原始 cron:一定要加引号,否则 shell 会把 * 展开成文件名
+
+glowclock list                           # 带序号列出提醒
+glowclock rm 2                            # 删除第 2 条
+```
+
+> 原始 cron 表达式(带 `*`)务必用引号包住 `"0 9 * * 1-5"`,否则 shell 会把 `*` 展开成当前目录的文件名。`@hourly`/`@daily`/`@every` 不含 `*`,不用引号。
+
+**写入哪个文件**:给了 `--reminders <路径>` 就写它;否则写第一个已存在的默认文件;都不存在则写 `~/.config/glowclock/reminders.txt`(自动创建)。把 `--reminders <路径>` 放在子命令**前面**可指定目标文件:
+
+```bash
+glowclock --reminders ~/my-reminders.txt add @hourly 喝水
+```
+
 ### 提醒如何出现 / 如何关闭
 
 - **出现**:到点时,屏幕中央弹出圆角框 `╭ 胖猫 提醒 ╮`,里面是胖猫 + 消息 + `按任意键关闭`,同时**响一声终端铃**。
@@ -185,6 +207,12 @@ cargo build --release
 
 ```
 glowclock [选项]
+glowclock <子命令> ...
+
+子命令(管理提醒文件):
+  add <调度> <消息...>   添加一条提醒(原始 cron 记得加引号:"0 9 * * 1-5")
+  list                   带序号列出提醒
+  rm <序号>              删除指定序号的提醒
 
 模式(默认进入交互式时钟):
   --snapshot          把一帧真彩渐变时钟以 ANSI 输出到 stdout 后退出
