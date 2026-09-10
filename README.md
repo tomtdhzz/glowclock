@@ -87,7 +87,7 @@ min  hour  dom  mon  dow   message
 | mon   | 1–12  |                                         |
 | dow   | 0–7   | 0 and 7 are Sunday, 1=Mon … 6=Sat       |
 
-Each field supports `*`, `N`, `A-B` (range), `*/S` (step), `A-B/S`, and `a,b,c` (list).
+Each field supports `*`, `N`, `A-B` (range), `*/S` (step), `A-B/S`, and `a,b,c` (list). The weekday field also accepts names `sun`–`sat`, and the month field `jan`–`dec` (e.g. `5 4 * * sun`).
 
 > As in standard cron: when both `dom` and `dow` are restricted (not `*`), a match on **either** fires; if one is `*`, the other decides.
 
@@ -140,7 +140,7 @@ Lines that fail to parse are reported to stderr on start and skipped; other line
 
 Instead of editing the file by hand, add / list / remove reminders directly. These write the reminders file (see *target file* below).
 
-You can also add one **without leaving the clock**: press `a`, type the reminder (same format as a file line — no shell quoting needed here), and press Enter. It is saved to the file and starts firing immediately; the cat confirms with `已添加提醒：…`.
+You can also add one **without leaving the clock**: press `a`, type the reminder (same format as a file line — no shell quoting needed here), and press Enter. As you type, a **live preview** shows what the schedule means and the next run time (e.g. `5 4 * * sun` → `每周日 04:05 · 下次 …`), with a symbol legend. It is saved to the file and starts firing immediately; the cat confirms with `已添加提醒：…`.
 
 ```bash
 # add:  glowclock add <schedule> <message...>

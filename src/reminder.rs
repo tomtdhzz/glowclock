@@ -31,8 +31,11 @@ impl FieldSet {
         v < 64 && self.mask & (1u64 << v) != 0
     }
 
-    /// Parse one cron field constrained to `min..=max`.
-    fn parse(spec: &str, min: u32, max: u32) -> Result<FieldSet, String> {
+    /// Parse one cron field constrained to `min..=max`. `names` maps textual
+    /// aliases (e.g. `sun`, `jan`) to numbers for the weekday/month fields.
+    fn parse(spec: &str, min: u32, max: u32, names: &[(&str, u32)]) -> Result<FieldSet, String> {
+        let spec = substitute_names(spec, names)?;
+        let spec = spec.as_str();
         let star = spec == "*";
         let mut mask = 0u64;
         for part in spec.split(',') {
@@ -68,6 +71,108 @@ impl FieldSet {
         }
         Ok(FieldSet { mask, star })
     }
+
+    /// The allowed values within `min..=max`, ascending.
+    fn values(&self, min: u32, max: u32) -> Vec<u32> {
+        (min..=max).filter(|v| self.contains(*v)).collect()
+    }
+
+    /// True when every value in `min..=max` is allowed (i.e. `*`).
+    fn is_all(&self, min: u32, max: u32) -> bool {
+        (min..=max).all(|v| self.contains(v))
+    }
+
+    /// The single allowed value, if exactly one.
+    fn single(&self, min: u32, max: u32) -> Option<u32> {
+        let vs = self.values(min, max);
+        (vs.len() == 1).then(|| vs[0])
+    }
+
+    /// A contiguous inclusive range `a..=b` (with `b > a`), if the set is one.
+    fn range(&self, min: u32, max: u32) -> Option<(u32, u32)> {
+        let vs = self.values(min, max);
+        if vs.len() >= 2 && vs.windows(2).all(|w| w[1] - w[0] == 1) {
+            Some((vs[0], *vs.last().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    /// A uniform step `s >= 2` starting at `min` and covering to the end
+    /// (i.e. the `*/s` shape), if the set is one.
+    fn step(&self, min: u32, max: u32) -> Option<u32> {
+        let vs = self.values(min, max);
+        if vs.len() < 2 || vs[0] != min {
+            return None;
+        }
+        let s = vs[1] - vs[0];
+        if s >= 2 && vs.windows(2).all(|w| w[1] - w[0] == s) && vs.last().unwrap() + s > max {
+            Some(s)
+        } else {
+            None
+        }
+    }
+}
+
+/// Weekday aliases (0 = Sunday). Accepted in the day-of-week field.
+const WEEKDAYS: &[(&str, u32)] = &[
+    ("sun", 0),
+    ("mon", 1),
+    ("tue", 2),
+    ("wed", 3),
+    ("thu", 4),
+    ("fri", 5),
+    ("sat", 6),
+];
+
+/// Month aliases (1 = January). Accepted in the month field.
+const MONTHS: &[(&str, u32)] = &[
+    ("jan", 1),
+    ("feb", 2),
+    ("mar", 3),
+    ("apr", 4),
+    ("may", 5),
+    ("jun", 6),
+    ("jul", 7),
+    ("aug", 8),
+    ("sep", 9),
+    ("oct", 10),
+    ("nov", 11),
+    ("dec", 12),
+];
+
+/// Replace textual aliases (`sun`, `jan`, …) in a field spec with their
+/// numbers, leaving digits and `*-,/` untouched.
+fn substitute_names(spec: &str, names: &[(&str, u32)]) -> Result<String, String> {
+    if names.is_empty() {
+        return Ok(spec.to_string());
+    }
+    let mut out = String::new();
+    let mut word = String::new();
+    for c in spec.chars() {
+        if c.is_ascii_alphabetic() {
+            word.push(c);
+        } else {
+            if !word.is_empty() {
+                out.push_str(&resolve_name(&word, names)?);
+                word.clear();
+            }
+            out.push(c);
+        }
+    }
+    if !word.is_empty() {
+        out.push_str(&resolve_name(&word, names)?);
+    }
+    Ok(out)
+}
+
+fn resolve_name(word: &str, names: &[(&str, u32)]) -> Result<String, String> {
+    let lw = word.to_ascii_lowercase();
+    names
+        .iter()
+        .find(|(n, _)| *n == lw)
+        .map(|(_, v)| v.to_string())
+        .ok_or_else(|| format!("unknown name {word:?}"))
 }
 
 /// A parsed 5-field cron expression.
@@ -85,16 +190,16 @@ impl Cron {
         if fields.len() != 5 {
             return Err(format!("expected 5 cron fields, got {}", fields.len()));
         }
-        let mut dow = FieldSet::parse(fields[4], 0, 7)?;
+        let mut dow = FieldSet::parse(fields[4], 0, 7, WEEKDAYS)?;
         // Cron treats both 0 and 7 as Sunday; fold 7 onto 0 for matching.
         if dow.contains(7) {
             dow.mask |= 1;
         }
         Ok(Cron {
-            min: FieldSet::parse(fields[0], 0, 59)?,
-            hour: FieldSet::parse(fields[1], 0, 23)?,
-            dom: FieldSet::parse(fields[2], 1, 31)?,
-            mon: FieldSet::parse(fields[3], 1, 12)?,
+            min: FieldSet::parse(fields[0], 0, 59, &[])?,
+            hour: FieldSet::parse(fields[1], 0, 23, &[])?,
+            dom: FieldSet::parse(fields[2], 1, 31, &[])?,
+            mon: FieldSet::parse(fields[3], 1, 12, MONTHS)?,
             dow,
         })
     }
@@ -117,6 +222,138 @@ impl Cron {
             dom_ok || dow_ok
         }
     }
+
+    /// A human-readable (Chinese) description of when this fires.
+    fn describe(&self) -> String {
+        let day = self.day_phrase();
+        let time = self.time_phrase();
+        // "每天 每小时…" is redundant — keep just the recurring time phrase.
+        if day == "每天" && time.starts_with('每') {
+            time
+        } else {
+            format!("{day} {time}")
+        }
+    }
+
+    /// The day/month portion: "每天", "每周日", "每月 1 日", "每周一至周五" …
+    fn day_phrase(&self) -> String {
+        let dom_all = self.dom.is_all(1, 31);
+        let dow_all = self.dow.is_all(0, 6);
+        let mon_all = self.mon.is_all(1, 12);
+
+        let mut day = if dom_all && dow_all {
+            "每天".to_string()
+        } else if dom_all {
+            format!("每{}", weekday_phrase(&self.dow))
+        } else if dow_all {
+            format!("每月 {} 日", set_str(&self.dom, 1, 31))
+        } else {
+            format!(
+                "每{} 或 每月 {} 日",
+                weekday_phrase(&self.dow),
+                set_str(&self.dom, 1, 31)
+            )
+        };
+        if !mon_all {
+            day = format!("{} 月的 {day}", set_str(&self.mon, 1, 12));
+        }
+        day
+    }
+
+    /// The time-of-day portion: "04:05", "每小时第 0 分", "每 30 分钟" …
+    fn time_phrase(&self) -> String {
+        let m = &self.min;
+        let h = &self.hour;
+        let m_all = m.is_all(0, 59);
+        let h_all = h.is_all(0, 23);
+
+        if let (Some(mm), Some(hh)) = (m.single(0, 59), h.single(0, 23)) {
+            return format!("{hh:02}:{mm:02}");
+        }
+        if m_all && h_all {
+            return "每分钟".to_string();
+        }
+
+        let min_part = if m_all {
+            "每分钟".to_string()
+        } else if let Some(s) = m.step(0, 59) {
+            format!("每 {s} 分钟")
+        } else if let Some(mm) = m.single(0, 59) {
+            format!("第 {mm} 分")
+        } else {
+            format!("第 {} 分", set_str(m, 0, 59))
+        };
+
+        if h_all {
+            // Whole-hour cadence.
+            if let Some(mm) = m.single(0, 59) {
+                return format!("每小时第 {mm} 分");
+            }
+            return min_part;
+        }
+
+        let hour_part = if let Some((a, b)) = h.range(0, 23) {
+            format!("{a}-{b} 点")
+        } else if let Some(hh) = h.single(0, 23) {
+            format!("{hh} 点")
+        } else if let Some(s) = h.step(0, 23) {
+            format!("每 {s} 小时")
+        } else {
+            format!("{} 点", set_str(h, 0, 23))
+        };
+        format!("{hour_part}{min_part}")
+    }
+}
+
+/// Chinese weekday phrase for a day-of-week set: "周日", "周一至周五", "周一、周三".
+fn weekday_phrase(f: &FieldSet) -> String {
+    const NAMES: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+    if let Some((a, b)) = f.range(0, 6) {
+        format!("{}至{}", NAMES[a as usize], NAMES[b as usize])
+    } else {
+        f.values(0, 6)
+            .iter()
+            .map(|v| NAMES[*v as usize].to_string())
+            .collect::<Vec<_>>()
+            .join("、")
+    }
+}
+
+/// Compact string for a value set: "9-18" for a range, else "0、30".
+fn set_str(f: &FieldSet, min: u32, max: u32) -> String {
+    if let Some((a, b)) = f.range(min, max) {
+        format!("{a}-{b}")
+    } else {
+        f.values(min, max)
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("、")
+    }
+}
+
+/// Human-readable (Chinese) duration, e.g. "45 分钟", "1 小时 30 分钟".
+fn human_duration(mut secs: i64) -> String {
+    let mut parts = Vec::new();
+    let days = secs / 86_400;
+    secs %= 86_400;
+    let hours = secs / 3_600;
+    secs %= 3_600;
+    let mins = secs / 60;
+    let s = secs % 60;
+    if days > 0 {
+        parts.push(format!("{days} 天"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours} 小时"));
+    }
+    if mins > 0 {
+        parts.push(format!("{mins} 分钟"));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(format!("{s} 秒"));
+    }
+    parts.join(" ")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +372,33 @@ pub struct Reminder {
 }
 
 impl Reminder {
+    /// A human-readable (Chinese) description of the schedule.
+    pub fn describe(&self) -> String {
+        match &self.schedule {
+            Schedule::Cron(c) => c.describe(),
+            Schedule::Every { period_secs } => format!("每 {}", human_duration(*period_secs)),
+        }
+    }
+
+    /// The next UNIX timestamp (>= `from_unix`) at which this fires, using
+    /// local `offset_secs` for cron matching. Searches up to ~400 days.
+    pub fn next_fire(&self, from_unix: i64, offset_secs: i32) -> Option<i64> {
+        match &self.schedule {
+            Schedule::Every { period_secs } => Some(from_unix + period_secs),
+            Schedule::Cron(c) => {
+                let mut t = (from_unix.div_euclid(60) + 1) * 60; // next minute boundary
+                for _ in 0..(400 * 24 * 60) {
+                    let dt = crate::clock::datetime_at(t, offset_secs);
+                    if c.matches(&dt) {
+                        return Some(t);
+                    }
+                    t += 60;
+                }
+                None
+            }
+        }
+    }
+
     /// Parse one reminder line. Returns `Ok(None)` for blank/comment lines.
     pub fn parse(line: &str) -> Result<Option<Reminder>, String> {
         let trimmed = line.trim();
@@ -406,6 +670,48 @@ mod tests {
         let e = Reminder::parse("@every 1h water").unwrap().unwrap();
         assert!(matches!(e.schedule, Schedule::Every { period_secs: 3600 }));
         assert_eq!(e.message, "water");
+    }
+
+    fn describe(line: &str) -> String {
+        Reminder::parse(line).unwrap().unwrap().describe()
+    }
+
+    #[test]
+    fn weekday_and_month_names_parse() {
+        // crontab.guru's example: "At 04:05 on Sunday."
+        assert_eq!(describe("5 4 * * sun x"), "每周日 04:05");
+        assert_eq!(describe("0 9 1 jan * x"), "1 月的 每月 1 日 09:00");
+        assert!(Reminder::parse("0 0 * * xyz x").is_err());
+    }
+
+    #[test]
+    fn describes_common_schedules() {
+        assert_eq!(describe("0 12 * * * x"), "每天 12:00");
+        assert_eq!(describe("30 12 * * * x"), "每天 12:30");
+        assert_eq!(describe("0 * * * * x"), "每小时第 0 分");
+        assert_eq!(describe("*/5 * * * * x"), "每 5 分钟");
+        assert_eq!(describe("0 0 1 * * x"), "每月 1 日 00:00");
+        assert_eq!(describe("@every 45m x"), "每 45 分钟");
+        assert_eq!(describe("@every 1h30m x"), "每 1 小时 30 分钟");
+        assert_eq!(describe("0 9 * * 1-5 x"), "每周一至周五 09:00");
+    }
+
+    #[test]
+    fn next_fire_is_in_the_future_and_matches() {
+        // From 2026-09-10 06:46:21 UTC, next "0 0 * * *" (UTC) is next midnight.
+        let base = 1_789_022_781i64;
+        let r = Reminder::parse("0 0 * * * x").unwrap().unwrap();
+        let next = r.next_fire(base, 0).unwrap();
+        assert!(next > base);
+        // It must be a minute where the cron actually matches.
+        let dt = crate::clock::datetime_at(next, 0);
+        assert_eq!((dt.h, dt.m), (0, 0));
+    }
+
+    #[test]
+    fn next_fire_interval() {
+        let r = Reminder::parse("@every 90s x").unwrap().unwrap();
+        assert_eq!(r.next_fire(1000, 0), Some(1090));
     }
 
     #[test]

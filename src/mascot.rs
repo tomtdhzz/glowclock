@@ -15,9 +15,7 @@ pub fn default_name() -> &'static str {
 pub fn builtin(name: &str) -> Option<Vec<String>> {
     let art: &[&str] = match name {
         // A round, content chonky cat — one continuous silhouette.
-        "chonk" => &[
-            " /\\_/\\", "( o.o )", "(  w  )", "(     )", "(_____)",
-        ],
+        "chonk" => &[" /\\_/\\", "( o.o )", "(  w  )", "(     )", "(_____)"],
         // Tiny happy kitten.
         "kitten" => &[" /\\_/\\", "( ^.^ )", " (u_u) "],
         // The classic cute loaf cat.

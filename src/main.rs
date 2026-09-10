@@ -656,7 +656,20 @@ fn interactive_loop<B: ratatui::backend::Backend>(
             None => clock::format_display(dt.hms(), args.hour24),
         };
         let theme = THEMES[*theme_idx];
-        term.draw(|f| ui(f, &text, &dt, theme, args.hour24, manager, &overlay, cat))?;
+        term.draw(|f| {
+            ui(
+                f,
+                &text,
+                &dt,
+                theme,
+                args.hour24,
+                manager,
+                &overlay,
+                cat,
+                now,
+                offset,
+            )
+        })?;
 
         // Animate the slide-in with short frames while a popup is young;
         // otherwise idle at 200 ms.
@@ -795,6 +808,8 @@ fn ui(
     manager: &Manager,
     overlay: &Overlay,
     cat: &[String],
+    now_unix: i64,
+    offset: i32,
 ) {
     let area = f.area();
     let bg = Style::default().bg(rgb(theme.bg));
@@ -901,7 +916,7 @@ fn ui(
     // Overlays.
     match overlay {
         Overlay::Popup(p) => render_reminder(f, area, theme, &p.message, cat, p.opened),
-        Overlay::Input(input) => render_input(f, area, theme, input),
+        Overlay::Input(input) => render_input(f, area, theme, input, now_unix, offset),
         Overlay::None => {}
     }
 }
@@ -930,7 +945,11 @@ fn render_reminder(
     let avail = (area.width as usize).saturating_sub(mascot::width(cat) + 8);
     let max_text = 24usize.min(avail);
     let wrapped = wrap_display(message, max_text.max(8));
-    let text_w = wrapped.iter().map(|l| mascot::disp_width(l)).max().unwrap_or(0);
+    let text_w = wrapped
+        .iter()
+        .map(|l| mascot::disp_width(l))
+        .max()
+        .unwrap_or(0);
 
     // Compose the group lines: bubble on the left, cat on the right.
     let bubble_w = text_w + 2; // one space of padding each side
@@ -1028,15 +1047,26 @@ fn wrap_display(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Draw the "add reminder" input box with a visible caret and any error.
-fn render_input(f: &mut Frame, area: Rect, theme: Theme, input: &InputBox) {
-    let w = 54u16.min(area.width.saturating_sub(2)).max(24);
-    let h = 8u16.min(area.height.saturating_sub(2)).max(7);
+/// Draw the "add reminder" input box: a caret line, a live preview of what the
+/// schedule means (plus the next fire time), and a short symbol legend.
+fn render_input(
+    f: &mut Frame,
+    area: Rect,
+    theme: Theme,
+    input: &InputBox,
+    now_unix: i64,
+    offset: i32,
+) {
+    let w = 62u16.min(area.width.saturating_sub(2)).max(30);
+    let h = 13u16.min(area.height.saturating_sub(2)).max(9);
     let rect = centered_rect(w, h, area);
 
     let dim = Style::default()
         .fg(rgb(theme.top))
         .add_modifier(Modifier::DIM);
+    let accent = Style::default().fg(rgb(theme.top));
+    let white = Style::default().fg(Color::Rgb(245, 245, 250));
+    let red = Style::default().fg(Color::Rgb(240, 100, 110));
 
     // Input line: text with a reversed-block caret at the cursor position.
     let before: String = input.chars[..input.cursor].iter().collect();
@@ -1053,32 +1083,72 @@ fn render_input(f: &mut Frame, area: Rect, theme: Theme, input: &InputBox) {
             0
         })
         .collect();
-    let white = Style::default().fg(Color::Rgb(245, 245, 250));
     let input_line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(rgb(theme.top))),
+        Span::styled("> ", accent),
         Span::styled(before, white),
         Span::styled(at, white.add_modifier(Modifier::REVERSED)),
         Span::styled(after, white),
     ]);
 
     let mut content: Vec<Line> = vec![
-        Line::from(Span::styled("输入提醒(和文件里写法一样):", dim)),
         Line::from(Span::styled(
-            "例  0 9 * * 1-5 开晨会   或   @every 45m 远眺",
+            "输入提醒(cron 或 @every/@hourly + 消息):",
             dim,
         )),
         Line::from(""),
         input_line,
+        Line::from(""),
     ];
+
+    // Live preview: describe the schedule and show the next fire time.
+    let buf = input.text();
+    let trimmed = buf.trim();
     if let Some(e) = &input.error {
-        content.push(Line::from(Span::styled(
-            format!("✗ {e}"),
-            Style::default().fg(Color::Rgb(240, 100, 110)),
-        )));
-    } else {
+        content.push(Line::from(Span::styled(format!("✗ {e}"), red)));
         content.push(Line::from(""));
+    } else if trimmed.is_empty() {
+        content.push(Line::from(Span::styled(
+            "例  0 9 * * 1-5 开晨会   ·   5 4 * * sun 周报   ·   @every 45m 远眺",
+            dim,
+        )));
+        content.push(Line::from(""));
+    } else {
+        match reminder::Reminder::parse(trimmed) {
+            Ok(Some(r)) => {
+                content.push(Line::from(vec![
+                    Span::styled("▸ ", accent),
+                    Span::styled(r.describe(), white.add_modifier(Modifier::BOLD)),
+                ]));
+                let next = match r.next_fire(now_unix, offset) {
+                    Some(t) => {
+                        let d = clock::datetime_at(t, offset);
+                        format!(
+                            "  下次 {:04}-{:02}-{:02} {:02}:{:02}",
+                            d.year, d.month, d.day, d.h, d.m
+                        )
+                    }
+                    None => "  下次 —".to_string(),
+                };
+                content.push(Line::from(Span::styled(next, dim)));
+            }
+            Ok(None) => content.extend([Line::from(""), Line::from("")]),
+            Err(e) => {
+                content.push(Line::from(Span::styled(format!("✗ {e}"), red)));
+                content.push(Line::from(""));
+            }
+        }
     }
-    content.push(Line::from(Span::styled("Enter 保存 · Esc 取消", dim)));
+
+    content.push(Line::from(""));
+    content.push(Line::from(Span::styled(
+        "* 任意   , 列表   - 范围   / 步长",
+        dim,
+    )));
+    content.push(Line::from(Span::styled(
+        "周: 0-6 或 sun-sat(0=周日)   月: 1-12 或 jan-dec",
+        dim,
+    )));
+    content.push(Line::from(Span::styled("Enter 保存 · Esc 取消", accent)));
 
     let block = Block::default()
         .borders(Borders::ALL)

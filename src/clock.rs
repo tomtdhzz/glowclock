@@ -54,6 +54,11 @@ pub fn now_datetime(offset_secs: i32) -> DateTime {
     from_epoch_dt(now_unix(), offset_secs)
 }
 
+/// Local civil date + time for an arbitrary UNIX timestamp.
+pub fn datetime_at(unix_secs: i64, offset_secs: i32) -> DateTime {
+    from_epoch_dt(unix_secs, offset_secs)
+}
+
 /// Convert a UNIX timestamp + offset into local time-of-day.
 fn from_epoch(unix_secs: i64, offset_secs: i32) -> Hms {
     let tod = (unix_secs + offset_secs as i64).rem_euclid(86_400);
